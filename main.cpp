@@ -28,6 +28,14 @@ float getMaxMass( particle* objects , int numParticles );
 
 void drawParticles( particle* objects , int numParticles , pngwriter* png , float maxMass );
 
+void distributeWork( particle* p , int numProcesses, int numParticles );
+
+void gatherWork( particle* p , int numProcesses,  int numParticles);
+
+void killSlaves( int numProcesses );
+
+void printParticles( particle* p , int numparticles , int id );
+
 unsigned long long int sequentialTime = 0;
 
 unsigned long long int parallelTime = 0;
@@ -56,11 +64,12 @@ int main( int argc, char *argv[] ) {
 
 	int numParticles = 80;
 
-	if( numParticles % cores != 0 )
+	if( numParticles % (cores-1) != 0 )
+
 		exit(1);
 
 	//make sure this divides evenly
-	int particlesPerNode = numParticles / cores;
+	int particlesPerNode = numParticles / ( cores - 1 );
 
 	if( id == MASTER_NODE ) {
 
@@ -70,50 +79,60 @@ int main( int argc, char *argv[] ) {
 
 		float maxMass = getMaxMass( p , numParticles );
 
-		sequential( p , imageSize , numParticles , timeSteps , maxMass , png );
+		//sequential( p , imageSize , numParticles , timeSteps , maxMass , png );
 
 		//send it to all the nodes
 		for( int i = 0 ; i < timeSteps ; i++ ) {
 
-			MPI_Scatter( p , numParticles, NBODY_PARTICLE_TYPE, p , numParticles , NBODY_PARTICLE_TYPE, MASTER_NODE , MPI_COMM_WORLD );
+			distributeWork( p , cores , particlesPerNode );
+
+			gatherWork( p , cores , particlesPerNode );
 
 			updatePositions( p , numParticles );
+
+			png->pngwriter_rename( i );
 
 			drawParticles( p , numParticles , png , maxMass );
 
 			}
 
-		MPI_Bcast( NULL , 0 , MPI_INT , TAG_KILL , MPI_COMM_WORLD );
+		killSlaves( cores );
 
-		system("convert -delay 2 -loop 0 *.png par_anim.gif && rm *.png");
+		exit(0);
+
+		//system("convert -delay 2 -loop 0 *.png par_anim.gif && rm *.png");
 
 		}
 
 	else {
 
-		particle* p = new particle[ particlesPerNode ];
+		particle* p = new particle[ numParticles ];
 
 		MPI_Status stat;
 
 		while( true ) {
 
-			MPI_Recv( p , particlesPerNode , NBODY_PARTICLE_TYPE , MASTER_NODE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
+			MPI_Recv( p , numParticles , NBODY_PARTICLE_TYPE , MASTER_NODE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
+
+			//if( id == 1 )
+
+				//printParticles(p , particlesPerNode , id);
 
 			if( stat.MPI_TAG == TAG_KILL )
 
-				break;
+				exit(0);
 
 			for( int i = 0 ; i < particlesPerNode ; i++ )
 
-				calculatePhysics( p , particlesPerNode , i );
+				calculatePhysics( p , particlesPerNode , (id - 1) * particlesPerNode + i );
 
 			MPI_Send( p , particlesPerNode , NBODY_PARTICLE_TYPE , MASTER_NODE , TAG_PARTICLES , MPI_COMM_WORLD );
 
 			}
 
 		}
-
-	MPI_Finalize();
+	//cout << "proc " << id << "exiting";
+	//MPI_Finalize();
 
 	return 0;
 
@@ -257,3 +276,49 @@ int getParticleColor( particle* p , int numParticles ) {
 
 	}
 */
+
+void killSlaves( int numProcesses ) {
+
+	for( int i = 0 ; i < numProcesses ; i++ )
+
+		MPI_Send( 0 , 0 , MPI_INT, i , TAG_KILL , MPI_COMM_WORLD );
+
+	}
+
+void distributeWork( particle* p , int numProcesses, int numParticles ) {
+
+	for( int i = 1 ; i < numProcesses ; i++ )
+
+		MPI_Send( p , numParticles , NBODY_PARTICLE_TYPE, i , TAG_PARTICLES , MPI_COMM_WORLD );
+
+	}
+
+void gatherWork( particle* p , int numProcesses,  int numParticles) {
+
+	particle* buf = new particle[numParticles];
+
+	MPI_Status stat;
+
+	int particlesPerNode = numParticles / (numProcesses - 1);
+
+	for( int i = 1 ; i < numProcesses ; i++ ) {
+
+		MPI_Recv( buf , numParticles , NBODY_PARTICLE_TYPE , MPI_ANY_SOURCE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
+
+		for( int j = 0 ; j < particlesPerNode ; j++ )
+
+			p[ (stat.MPI_SOURCE - 1) * particlesPerNode + j ] = buf[ (stat.MPI_SOURCE - 1) * particlesPerNode + j ];
+
+		}
+
+	}
+void printParticles( particle* p , int numparticles , int id ) {
+
+	cout << "Particles for process " << id << endl;
+
+	for( int i = 0 ; i < numparticles ; i++ ) {
+
+		cout << "id: " << p[i].id << endl << "x: " << p[i].x << endl << "y: " << p[i].y << endl << endl;
+
+	}
+}

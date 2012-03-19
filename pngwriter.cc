@@ -895,8 +895,8 @@ void pngwriter::pngwriter_rename(long unsigned int index)
 	return;
      }
 
-   delete [] filename_;
-   delete [] texttitle_;
+   //delete [] filename_;
+   //delete [] texttitle_;
 
    filename_ = new char[strlen(buffer)+1];
    texttitle_ = new char[strlen(buffer)+1];
