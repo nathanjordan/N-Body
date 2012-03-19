@@ -1,8 +1,13 @@
 #include "pngwriter.h"
 #include "particle.h"
-#include <sys/time.h>
+#include <iostream>
+#include <math.h>
 #include <mpi.h>
 #include <signal.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
 
 using namespace std;
 
@@ -29,9 +34,9 @@ float getMaxMass( particle* objects , int numParticles );
 
 void drawParticles( particle* objects , int numParticles , pngwriter* png , float maxMass );
 
-void distributeWork( particle* p , int numProcesses, int numParticles );
+void distributeWork( particle* p , int numProcesses, int numParticles, MPI_Datatype &t );
 
-void gatherWork( particle* p , int numProcesses,  int numParticles);
+void gatherWork( particle* p , int numProcesses,  int numParticles, MPI_Datatype &t );
 
 void killSlaves( int numProcesses );
 
@@ -39,14 +44,12 @@ void printParticles( particle* p , int numparticles , int id );
 
 long long int getTimeInMicroseconds();
 
-unsigned long long int sequentialTime = 0;
-
-unsigned long long int parallelTime = 0;
-
 void meh() {  }
 
-MPI_Datatype NBODY_PARTICLE_TYPE;
+
+
 long long int t1,t2;
+
 int main( int argc, char *argv[] ) {
 
 	if( argc < 3 ) {
@@ -67,6 +70,8 @@ int main( int argc, char *argv[] ) {
 
 	MPI_Comm_rank(MPI_COMM_WORLD,&id);
 
+	MPI_Datatype NBODY_PARTICLE_TYPE;
+
 	MPI_Type_contiguous(6, MPI_FLOAT, &NBODY_PARTICLE_TYPE);
 
 	MPI_Type_commit(&NBODY_PARTICLE_TYPE);
@@ -86,12 +91,14 @@ int main( int argc, char *argv[] ) {
 	//make sure this divides evenly
 	int particlesPerNode = numParticles / ( cores - 1 );
 
+	signal( SIGSEGV , SIG_IGN );
+
 	if( id == MASTER_NODE ) {
 
 		particle* p = generateParticles( imageSize , 20 );
 
-		pngwriter* png = new pngwriter( imageSize , imageSize , 0 , "" );
-
+		//pngwriter* png = new pngwriter( imageSize , imageSize , 0 , "" );
+		pngwriter* png = 0;
 		float maxMass = getMaxMass( p , numParticles );
 
 		if(isSequential) {
@@ -102,9 +109,7 @@ int main( int argc, char *argv[] ) {
 
 			t2 = getTimeInMicroseconds();
 
-			sequentialTime = t2 - t1;
-
-			cout << "Seq time for " << numParticles << " particles: " << sequentialTime / 1000.0 << " ms" << endl;
+			cout << "Seq time for " << numParticles << " particles: " << (t2 - t1) / 1000.0 << " ms" << endl;
 
 			MPI_Finalize();
 
@@ -117,9 +122,9 @@ int main( int argc, char *argv[] ) {
 		//send it to all the nodes
 		for( int i = 0 ; i < timeSteps ; i++ ) {
 
-			distributeWork( p , cores , numParticles );
+			distributeWork( p , cores , numParticles  , NBODY_PARTICLE_TYPE );
 
-			gatherWork( p , cores , numParticles );
+			gatherWork( p , cores , numParticles , NBODY_PARTICLE_TYPE );
 
 			updatePositions( p , numParticles );
 
@@ -131,13 +136,7 @@ int main( int argc, char *argv[] ) {
 
 		t2 = getTimeInMicroseconds();
 
-		parallelTime = t2 - t1;
-
-		cout << "Par time for " << numParticles << " particles: " << parallelTime / 1000.0 << " ms" << endl;
-
-		sigignore( SIGSEGV );
-
-		MPI_Finalize();
+		cout << "Par time for " << numParticles << " particles: " << (t2 - t1) / 1000.0 << " ms" << endl;
 
 		//system("convert -delay 2 -loop 0 *.png par_anim.gif && rm *.png");
 
@@ -163,17 +162,15 @@ int main( int argc, char *argv[] ) {
 
 			for( int i = 0 ; i < particlesPerNode ; i++ )
 
-				calculatePhysics( p , particlesPerNode , (id - 1) * particlesPerNode + i );
+				calculatePhysics( p , numParticles , (id - 1) * particlesPerNode + i );
 
 			MPI_Send( p , numParticles , NBODY_PARTICLE_TYPE , MASTER_NODE , TAG_PARTICLES , MPI_COMM_WORLD );
 
 			}
 
-		MPI_Finalize();
-
-		exit(0);
-
 		}
+
+	MPI_Finalize();
 
 	return 0;
 
@@ -326,17 +323,19 @@ void killSlaves( int numProcesses ) {
 
 	}
 
-void distributeWork( particle* p , int numProcesses, int numParticles ) {
+void distributeWork( particle* p , int numProcesses, int numParticles , MPI_Datatype &t ) {
+
+	//MPI_Bcast( p , numParticles , t , MASTER_NODE , MPI_COMM_WORLD );
 
 	for( int i = 1 ; i < numProcesses ; i++ )
 
-		MPI_Send( p , numParticles , NBODY_PARTICLE_TYPE, i , TAG_PARTICLES , MPI_COMM_WORLD );
+		MPI_Send( p , numParticles , t, i , TAG_PARTICLES , MPI_COMM_WORLD );
 
 	}
 
-void gatherWork( particle* p , int numProcesses,  int numParticles) {
+void gatherWork( particle* p , int numProcesses,  int numParticles , MPI_Datatype &t ) {
 
-	particle* buf = new particle[numParticles];
+	particle* buf;
 
 	MPI_Status stat;
 
@@ -344,11 +343,15 @@ void gatherWork( particle* p , int numProcesses,  int numParticles) {
 
 	for( int i = 1 ; i < numProcesses ; i++ ) {
 
-		MPI_Recv( buf , numParticles , NBODY_PARTICLE_TYPE , MPI_ANY_SOURCE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
+		buf = new particle[numParticles];
+
+		MPI_Recv( buf , numParticles , t , MPI_ANY_SOURCE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
 
 		for( int j = 0 ; j < particlesPerNode ; j++ )
 
-			p[ (stat.MPI_SOURCE - 1) * particlesPerNode + j ] = buf[ (stat.MPI_SOURCE - 1) * particlesPerNode + j ];
+			p[ j ] = buf[ j ];
+
+		delete [] buf;
 
 		}
 
