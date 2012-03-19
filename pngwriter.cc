@@ -985,7 +985,7 @@ void pngwriter::close()
    time_t          gmt;
    png_time        mod_time;
    png_text        text_ptr[5];
-   time(&gmt);
+   //time(&gmt);
    png_convert_from_time_t(&mod_time, gmt);
    png_set_tIME(png_ptr, info_ptr, &mod_time);
    text_ptr[0].key = "Title";

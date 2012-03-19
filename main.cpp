@@ -2,6 +2,7 @@
 #include "particle.h"
 #include <sys/time.h>
 #include <mpi.h>
+#include <signal.h>
 
 using namespace std;
 
@@ -36,13 +37,25 @@ void killSlaves( int numProcesses );
 
 void printParticles( particle* p , int numparticles , int id );
 
+long long int getTimeInMicroseconds();
+
 unsigned long long int sequentialTime = 0;
 
 unsigned long long int parallelTime = 0;
 
-MPI_Datatype NBODY_PARTICLE_TYPE;
+void meh() {  }
 
+MPI_Datatype NBODY_PARTICLE_TYPE;
+long long int t1,t2;
 int main( int argc, char *argv[] ) {
+
+	if( argc < 3 ) {
+
+		cerr << "Usage: nbody.out [numParticles] [sequential yes/no]";
+
+		exit(1);
+
+		}
 
 	int id;
 
@@ -62,7 +75,9 @@ int main( int argc, char *argv[] ) {
 
 	int timeSteps = 300;
 
-	int numParticles = 80;
+	int numParticles = atoi( argv[1] );
+
+	bool isSequential = atoi(argv[2]);
 
 	if( numParticles % (cores-1) != 0 )
 
@@ -79,26 +94,50 @@ int main( int argc, char *argv[] ) {
 
 		float maxMass = getMaxMass( p , numParticles );
 
-		//sequential( p , imageSize , numParticles , timeSteps , maxMass , png );
+		if(isSequential) {
+
+			t1 = getTimeInMicroseconds();
+
+			sequential( p , imageSize , numParticles , timeSteps , maxMass , png );
+
+			t2 = getTimeInMicroseconds();
+
+			sequentialTime = t2 - t1;
+
+			cout << "Seq time for " << numParticles << " particles: " << sequentialTime / 1000.0 << " ms" << endl;
+
+			MPI_Finalize();
+
+			exit(0);
+
+			}
+
+		t1 = getTimeInMicroseconds();
 
 		//send it to all the nodes
 		for( int i = 0 ; i < timeSteps ; i++ ) {
 
-			distributeWork( p , cores , particlesPerNode );
+			distributeWork( p , cores , numParticles );
 
-			gatherWork( p , cores , particlesPerNode );
+			gatherWork( p , cores , numParticles );
 
 			updatePositions( p , numParticles );
 
-			png->pngwriter_rename( i );
+			//png->pngwriter_rename( i );
 
-			drawParticles( p , numParticles , png , maxMass );
+			//drawParticles( p , numParticles , png , maxMass );
 
 			}
 
-		killSlaves( cores );
+		t2 = getTimeInMicroseconds();
 
-		exit(0);
+		parallelTime = t2 - t1;
+
+		cout << "Par time for " << numParticles << " particles: " << parallelTime / 1000.0 << " ms" << endl;
+
+		sigignore( SIGSEGV );
+
+		MPI_Finalize();
 
 		//system("convert -delay 2 -loop 0 *.png par_anim.gif && rm *.png");
 
@@ -110,29 +149,31 @@ int main( int argc, char *argv[] ) {
 
 		MPI_Status stat;
 
-		while( true ) {
+		if(isSequential) {
+
+			MPI_Finalize();
+
+			exit(0);
+
+			}
+
+		for( int i = 0 ; i < timeSteps ; i++ ) {
 
 			MPI_Recv( p , numParticles , NBODY_PARTICLE_TYPE , MASTER_NODE , MPI_ANY_TAG , MPI_COMM_WORLD, &stat );
-
-			//if( id == 1 )
-
-				//printParticles(p , particlesPerNode , id);
-
-			if( stat.MPI_TAG == TAG_KILL )
-
-				exit(0);
 
 			for( int i = 0 ; i < particlesPerNode ; i++ )
 
 				calculatePhysics( p , particlesPerNode , (id - 1) * particlesPerNode + i );
 
-			MPI_Send( p , particlesPerNode , NBODY_PARTICLE_TYPE , MASTER_NODE , TAG_PARTICLES , MPI_COMM_WORLD );
+			MPI_Send( p , numParticles , NBODY_PARTICLE_TYPE , MASTER_NODE , TAG_PARTICLES , MPI_COMM_WORLD );
 
 			}
 
+		MPI_Finalize();
+
+		exit(0);
+
 		}
-	//cout << "proc " << id << "exiting";
-	//MPI_Finalize();
 
 	return 0;
 
@@ -169,7 +210,7 @@ void sequential( particle* p , int imageSize , int numParticles, int timesteps ,
 
 	for( int i = 0 ; i < timesteps ; i++ ) {
 
-		png->pngwriter_rename( i );
+		//png->pngwriter_rename( i );
 
 		for( int j = 0 ; j < numParticles ; j++ ) {
 
@@ -179,11 +220,11 @@ void sequential( particle* p , int imageSize , int numParticles, int timesteps ,
 
 		updatePositions( p , numParticles );
 
-		drawParticles( p , numParticles , png , maxMass );
+		//drawParticles( p , numParticles , png , maxMass );
 
 		}
 
-	system("convert -delay 2 -loop 0 *.png animation.gif && rm *.png");
+	//system("convert -delay 2 -loop 0 *.png animation.gif && rm *.png");
 
 	}
 
@@ -263,7 +304,7 @@ int getParticleColor( particle* p , int numParticles ) {
 
 	}
 
-/*long long int getTimeInMicroseconds() {
+long long int getTimeInMicroseconds() {
 
 	struct timeval tv;
 	struct timezone tz;
@@ -275,7 +316,7 @@ int getParticleColor( particle* p , int numParticles ) {
 	return tm->tm_hour * 60 * 60 * 1000000 + tm->tm_min * 60 * 1000000 + tm->tm_sec * 1000000 + tv.tv_usec;
 
 	}
-*/
+
 
 void killSlaves( int numProcesses ) {
 
